@@ -1,0 +1,381 @@
+<Window x:Class="DebUpdater.App.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:models="clr-namespace:DebUpdater.App.Models"
+        Title="离线 deb 升级工具 · SSH 网络版"
+        Width="1080" Height="840"
+        MinWidth="940" MinHeight="680"
+        Background="{StaticResource WindowBrush}"
+        Foreground="{StaticResource TextBrush}"
+        WindowStartupLocation="CenterScreen"
+        AllowDrop="True"
+        DragOver="OnWindowDragOver"
+        Drop="OnWindowDrop">
+
+    <Window.Resources>
+        <Style x:Key="StepDot" TargetType="Ellipse">
+            <Setter Property="Width" Value="9" />
+            <Setter Property="Height" Value="9" />
+            <Setter Property="Fill" Value="{StaticResource MutedBrush}" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+        </Style>
+
+        <Style x:Key="StepStatusText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+            <Setter Property="Margin" Value="0,2,0,0" />
+        </Style>
+
+        <Style TargetType="PasswordBox">
+            <Setter Property="Background" Value="{StaticResource InputBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="CaretBrush" Value="{StaticResource TextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- 标题栏 -->
+        <Border Grid.Row="0" Style="{StaticResource CardBorder}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock Text="离线 deb 升级工具" FontSize="18" FontWeight="SemiBold" />
+                    <TextBlock Margin="0,4,0,0"
+                               Foreground="{StaticResource MutedBrush}"
+                               FontSize="12"
+                               Text="网线 SSH 登录设备 → 停服 → 写 /oem/config/wlan0_bt_switch=1 → 装 ota 包 → 装 gen1 包 → 启动服务并复查标志位" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                    <TextBlock FontSize="12" FontWeight="SemiBold">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <!-- 未连接/失败：红色 -->
+                                <Setter Property="Foreground" Value="{StaticResource ErrorBrush}" />
+                                <Style.Triggers>
+                                    <!-- 已连接：绿色 -->
+                                    <DataTrigger Binding="{Binding IsConnected, Mode=OneWay}" Value="True">
+                                        <Setter Property="Foreground" Value="{StaticResource OkBrush}" />
+                                    </DataTrigger>
+                                    <!-- 连接中：蓝色 -->
+                                    <DataTrigger Binding="{Binding ConnectionStatus, Mode=OneWay}" Value="连接中…">
+                                        <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                        <Run Text="连接状态：" />
+                        <Run Text="{Binding ConnectionStatus, Mode=OneWay}" />
+                    </TextBlock>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- SSH 连接 -->
+        <Border Grid.Row="1" Style="{StaticResource CardBorder}">
+            <StackPanel>
+                <TextBlock Text="设备连接（SSH）" Style="{StaticResource SectionTitle}" Margin="0,0,0,10" />
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="212" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="72" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="126" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="142" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Text="设备" Style="{StaticResource FieldLabel}" />
+                    <!-- 只读可编辑：框内直接显示已选设备 IP，但不能手填 IP，只能从探测结果里选。 -->
+                    <ComboBox Grid.Column="1"
+                              ItemsSource="{Binding Devices}"
+                              SelectedItem="{Binding SelectedDevice}"
+                              TextSearch.TextPath="Display"
+                              IsEditable="True"
+                              IsReadOnly="True"
+                              ToolTip="{Binding SelectedDevice.Description}">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Display}" ToolTip="{Binding Description}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+
+                    <TextBlock Grid.Column="2" Text="端口" Style="{StaticResource FieldLabel}" Margin="16,0,8,0" />
+                    <TextBox Grid.Column="3" Text="{Binding Port, UpdateSourceTrigger=PropertyChanged}" />
+
+                    <TextBlock Grid.Column="4" Text="账号" Style="{StaticResource FieldLabel}" Margin="16,0,8,0" />
+                    <TextBox Grid.Column="5" Text="{Binding User, UpdateSourceTrigger=PropertyChanged}" />
+
+                    <TextBlock Grid.Column="6" Text="密码" Style="{StaticResource FieldLabel}" Margin="16,0,8,0" />
+                    <PasswordBox x:Name="PasswordBox"
+                                 Grid.Column="7"
+                                 PasswordChanged="OnPasswordChanged" />
+
+                    <Button Grid.Column="8"
+                            Margin="16,0,0,0"
+                            Content="探测设备"
+                            Command="{Binding ScanDevicesCommand}" />
+                    <Button Grid.Column="9"
+                            Content="测试连接"
+                            Command="{Binding TestConnectionCommand}" />
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- 安装包 -->
+        <Border Grid.Row="2" Style="{StaticResource CardBorder}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="安装包（目录指向存放 deb 的文件夹，默认全选，按 ota / gen1 分组依次安装）"
+                               Style="{StaticResource SectionTitle}" />
+                    <Button Grid.Column="1" Content="浏览目录" Command="{Binding BrowseDirectoryCommand}" />
+                    <Button Grid.Column="2" Content="重新扫描" Command="{Binding ScanPackagesCommand}" />
+                    <Button Grid.Column="3" Content="导出日志" Command="{Binding ExportLogCommand}" />
+                </Grid>
+
+                <Grid Grid.Row="1" Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="deb 包目录" Style="{StaticResource FieldLabel}" />
+                    <TextBox Grid.Column="1"
+                             Text="{Binding PackageDirectory, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="选择存放 *.deb 文件的文件夹（不是单个 deb 文件），程序会扫描该目录下的所有 deb 包" />
+                </Grid>
+
+                <ListView Grid.Row="2"
+                          Height="150"
+                          ItemsSource="{Binding Packages}">
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Width="52">
+                                <GridViewColumn.Header>
+                                    <TextBlock Text="选择" />
+                                </GridViewColumn.Header>
+                                <GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <CheckBox IsChecked="{Binding Selected, Mode=TwoWay}" HorizontalAlignment="Center" />
+                                    </DataTemplate>
+                                </GridViewColumn.CellTemplate>
+                            </GridViewColumn>
+                            <GridViewColumn Header="文件名" Width="380" DisplayMemberBinding="{Binding FileName}" />
+                            <GridViewColumn Header="大小" Width="90" DisplayMemberBinding="{Binding SizeText}" />
+                            <GridViewColumn Header="分组" Width="90" DisplayMemberBinding="{Binding GroupLabel}" />
+                            <GridViewColumn Header="包内版本" Width="220" DisplayMemberBinding="{Binding TargetVersion}" />
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+            </Grid>
+        </Border>
+
+        <!-- 关键流程 + 操作 -->
+        <Border Grid.Row="3" Style="{StaticResource CardBorder}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock Text="关键流程" Style="{StaticResource SectionTitle}" Margin="0,0,0,10" />
+
+                <ItemsControl Grid.Row="1" ItemsSource="{Binding Steps}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate DataType="{x:Type models:UpgradeStepItem}">
+                            <Border Width="196"
+                                    Margin="0,0,10,8"
+                                    Padding="10,8"
+                                    CornerRadius="6"
+                                    Background="#FF141A23"
+                                    BorderBrush="{StaticResource BorderBrush}"
+                                    BorderThickness="1">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Ellipse x:Name="Dot" Style="{StaticResource StepDot}" />
+                                        <TextBlock Text="{Binding Name}"
+                                                   FontSize="12"
+                                                   Foreground="{StaticResource TextBrush}" />
+                                    </StackPanel>
+                                    <TextBlock x:Name="StatusText"
+                                               Style="{StaticResource StepStatusText}">
+                                        <Run Text="{Binding StatusText, Mode=OneWay}" />
+                                        <Run Text=" " />
+                                        <Run Text="{Binding Detail, Mode=OneWay}" />
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
+                            <DataTemplate.Triggers>
+                                <DataTrigger Binding="{Binding Status}" Value="{x:Static models:StepStatus.Running}">
+                                    <Setter TargetName="Dot" Property="Fill" Value="{StaticResource AccentBrush}" />
+                                    <Setter TargetName="StatusText" Property="Foreground" Value="{StaticResource AccentBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Status}" Value="{x:Static models:StepStatus.Done}">
+                                    <Setter TargetName="Dot" Property="Fill" Value="{StaticResource OkBrush}" />
+                                    <Setter TargetName="StatusText" Property="Foreground" Value="{StaticResource OkBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Status}" Value="{x:Static models:StepStatus.Failed}">
+                                    <Setter TargetName="Dot" Property="Fill" Value="{StaticResource ErrorBrush}" />
+                                    <Setter TargetName="StatusText" Property="Foreground" Value="{StaticResource ErrorBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Status}" Value="{x:Static models:StepStatus.Skipped}">
+                                    <Setter TargetName="Dot" Property="Fill" Value="{StaticResource WarnBrush}" />
+                                    <Setter TargetName="StatusText" Property="Foreground" Value="{StaticResource WarnBrush}" />
+                                </DataTrigger>
+                            </DataTemplate.Triggers>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <Grid Grid.Row="2" Margin="0,4,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <Button Grid.Column="0"
+                            Margin="0"
+                            Style="{StaticResource PrimaryButton}"
+                            Content="开始升级"
+                            Command="{Binding StartCommand}"
+                            ToolTipService.ShowOnDisabled="True"
+                            ToolTip="需先点“探测设备”成功连上设备后才可用" />
+                    <Button Grid.Column="1" Content="取消" Command="{Binding CancelCommand}" />
+
+                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                        <ProgressBar Width="200" Value="{Binding ProgressValue, Mode=OneWay}" Margin="0,0,12,0" />
+                        <TextBlock FontSize="12" MinWidth="240" VerticalAlignment="Center">
+                            <Run Text="当前阶段：" Foreground="{StaticResource MutedBrush}" />
+                            <Run Text="{Binding StatusText, Mode=OneWay}"
+                                 Foreground="{StaticResource TextBrush}" />
+                            <Run Text="  " />
+                            <Run Text="{Binding ProgressValue, Mode=OneWay}"
+                                 Foreground="{StaticResource AccentBrush}" />
+                            <Run Text="%" Foreground="{StaticResource AccentBrush}" />
+                        </TextBlock>
+                        <TextBlock Text="{Binding ElapsedText, Mode=OneWay}"
+                                   FontSize="12"
+                                   FontWeight="SemiBold"
+                                   FontFamily="Consolas"
+                                   MinWidth="96"
+                                   Margin="16,0,0,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextBrush}"
+                                   ToolTip="本次升级已消耗的时间" />
+                    </StackPanel>
+                </Grid>
+            </Grid>
+        </Border>
+
+        <!-- 日志 -->
+        <Border Grid.Row="4" Style="{StaticResource CardBorder}" Margin="0">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Grid Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="执行日志（可拖拽 deb 所在目录到窗口空白处快速加载）"
+                               Style="{StaticResource SectionTitle}" />
+                    <Button Grid.Column="1" Content="清空日志" Command="{Binding ClearLogCommand}" />
+                </Grid>
+
+                <ListBox x:Name="LogListBox"
+                         Grid.Row="1"
+                         ItemsSource="{Binding Logs}"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="0,1">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="66" />
+                                    <ColumnDefinition Width="52" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="{Binding TimeText}"
+                                           FontFamily="Consolas"
+                                           FontSize="12"
+                                           Foreground="{StaticResource MutedBrush}" />
+                                <TextBlock x:Name="LevelBlock"
+                                           Grid.Column="1"
+                                           Text="{Binding LevelText}"
+                                           FontFamily="Consolas"
+                                           FontSize="12"
+                                           Foreground="{StaticResource MutedBrush}" />
+                                <TextBlock Grid.Column="2"
+                                           Text="{Binding Message}"
+                                           TextWrapping="Wrap"
+                                           FontFamily="Consolas"
+                                           FontSize="12"
+                                           Foreground="{StaticResource TextBrush}" />
+                            </Grid>
+                            <DataTemplate.Triggers>
+                                <DataTrigger Binding="{Binding LevelText}" Value="OK">
+                                    <Setter TargetName="LevelBlock" Property="Foreground" Value="{StaticResource OkBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding LevelText}" Value="WARN">
+                                    <Setter TargetName="LevelBlock" Property="Foreground" Value="{StaticResource WarnBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding LevelText}" Value="ERROR">
+                                    <Setter TargetName="LevelBlock" Property="Foreground" Value="{StaticResource ErrorBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding LevelText}" Value="CMD">
+                                    <Setter TargetName="LevelBlock" Property="Foreground" Value="{StaticResource AccentBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding LevelText}" Value="STEP">
+                                    <Setter TargetName="LevelBlock" Property="Foreground" Value="{StaticResource TextBrush}" />
+                                </DataTrigger>
+                            </DataTemplate.Triggers>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
