@@ -66,6 +66,8 @@ public sealed record UpgradeRequest(
     IReadOnlyList<LocalDebPackage> Packages,
     string ServiceName = "gen1-app.service",
     string BtSwitchFile = "/oem/config/wlan0_bt_switch",
+    /// <summary>写入 BT 开关标志位的值：默认 1（保持 wlan0 + BT 开启）；界面勾选后置 0（关闭 wlan0 + BT）。</summary>
+    int BtSwitchValue = 1,
     string RemoteRoot = "/data/local/tmp/originflow_resume",
     bool StartServiceAfterInstall = true,
     bool RebootAfterInstall = false,

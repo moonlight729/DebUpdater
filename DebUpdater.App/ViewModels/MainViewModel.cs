@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Input;
@@ -39,6 +40,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _packageDirectory = AppContext.BaseDirectory;
     private string _connectionStatus = "未连接";
     private string _elapsedText = "耗时 00:00:00";
+    private bool _disableBtSwitch;
 
     public MainViewModel(ToolSettings settings, string settingsPath)
     {
@@ -52,6 +54,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         PackageDirectory = string.IsNullOrWhiteSpace(settings.PackageDirectory)
             ? ResolvePackageDirectory()
             : settings.PackageDirectory;
+        DisableBtSwitch = settings.DisableBtSwitch;
 
         foreach (var name in UpgradeSteps.All)
         {
@@ -157,6 +160,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
         private set => SetProperty(ref _statusText, value);
     }
 
+    /// <summary>程序版本号，取自 csproj 的 Version / InformationalVersion，如 1.0.0。</summary>
+    public string AppVersion { get; } = ReadAppVersion();
+
+    /// <summary>标题栏以 tag 形式展示的版本号，如 V1.0.0。</summary>
+    public string AppVersionTag => $"V{AppVersion}";
+
+    /// <summary>窗口标题：工具名 + 版本 tag。</summary>
+    public string WindowTitle => $"离线 deb 升级工具 · SSH 网络版  {AppVersionTag}";
+
     public string Host
     {
         get => _host;
@@ -217,6 +229,34 @@ public sealed class MainViewModel : INotifyPropertyChanged
         private set => SetProperty(ref _connectionStatus, value);
     }
 
+    /// <summary>
+    /// 勾选后升级完成把 /oem/config/wlan0_bt_switch 写成 0（系统应用会关闭 wlan0 与蓝牙）；
+    /// 不勾选时写 1（保持 wlan0 与蓝牙开启，出厂默认行为）。
+    /// </summary>
+    public bool DisableBtSwitch
+    {
+        get => _disableBtSwitch;
+        set
+        {
+            if (!SetProperty(ref _disableBtSwitch, value))
+            {
+                return;
+            }
+
+            OnPropertyChanged(nameof(BtSwitchValue));
+            OnPropertyChanged(nameof(BtSwitchSummary));
+            AppendLog("INFO", BtSwitchSummary);
+            SaveSettings();
+        }
+    }
+
+    /// <summary>实际写入设备的标志位值：勾选 = 0，未勾选 = 1。</summary>
+    public int BtSwitchValue => DisableBtSwitch ? 0 : 1;
+
+    /// <summary>界面上展示的当前标志位策略。</summary>
+    public string BtSwitchSummary =>
+        $"{BtSwitchFile} = {BtSwitchValue}（{(DisableBtSwitch ? "关闭 wlan0 + 蓝牙" : "保持 wlan0 + 蓝牙开启")}）";
+
     public void LoadPackages(string? directory)
     {
         if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
@@ -250,6 +290,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _settings.Password = Password;
         _settings.PackageDirectory = PackageDirectory;
         _settings.LastDeviceIp = SelectedDevice?.Ip ?? Host;
+        _settings.DisableBtSwitch = DisableBtSwitch;
 
         ToolSettingsStore.Save(_settingsPath, _settings);
     }
@@ -474,7 +515,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         ProgressValue = 0;
         StatusText = $"开始执行 · 目标 {Host}";
         AppendLog("STEP", "=== 开始升级流程（SSH 版，逻辑对齐 originflow_resume.sh）===");
-        AppendLog("INFO", $"目标设备：{User}@{Host}:{Port}；服务：{ServiceName}；标志位：{BtSwitchFile} = 1");
+        AppendLog("INFO", $"目标设备：{User}@{Host}:{Port}；服务：{ServiceName}；标志位：{BtSwitchSummary}");
 
         try
         {
@@ -488,9 +529,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
             var selected = Packages.Where(p => p.Selected).ToList();
             var request = new UpgradeRequest(
                 selected,
-                ServiceName,
-                BtSwitchFile,
-                RemoteRoot,
+                ServiceName: ServiceName,
+                BtSwitchFile: BtSwitchFile,
+                BtSwitchValue: BtSwitchValue,
+                RemoteRoot: RemoteRoot,
                 StartServiceAfterInstall: true,
                 RebootAfterInstall: false,
                 KeepRemoteFiles: false,
@@ -532,6 +574,21 @@ public sealed class MainViewModel : INotifyPropertyChanged
             _cts?.Dispose();
             _cts = null;
         }
+    }
+
+    private static string ReadAppVersion()
+    {
+        var assembly = Assembly.GetExecutingAssembly();
+        var informational = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        var version = string.IsNullOrWhiteSpace(informational)
+            ? assembly.GetName().Version?.ToString()
+            : informational;
+
+        version = (version ?? "0.0.0").Trim().TrimStart('v', 'V');
+
+        // InformationalVersion 可能带 +build 元数据，展示时去掉。
+        var plus = version.IndexOf('+');
+        return plus >= 0 ? version[..plus] : version;
     }
 
     private static string FormatElapsed(TimeSpan value) =>

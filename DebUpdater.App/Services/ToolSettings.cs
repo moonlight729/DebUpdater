@@ -14,6 +14,12 @@ public sealed class ToolSettings
 
     /// <summary>上次连上的设备 IP，启动时优先探测，命中就不用全扫。</summary>
     public string LastDeviceIp { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 是否把 /oem/config/wlan0_bt_switch 写成 0（关闭 wlan0 + 蓝牙）。
+    /// 默认 false：升级完成后写 1，保持 wlan0 + 蓝牙开启。
+    /// </summary>
+    public bool DisableBtSwitch { get; set; }
 }
 
 public static class ToolSettingsStore

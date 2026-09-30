@@ -8,7 +8,7 @@ namespace DebUpdater.App.Services;
 /// <summary>
 /// 把 originflow_resume.sh 的执行逻辑搬到上位机编排层：
 /// C# 负责流程控制，SSH 只下发最小粒度的 POSIX sh 命令（设备 shell 通常是 bash/sh）。
-/// 顺序严格对齐脚本：root → 停服 → 写 /oem/config/wlan0_bt_switch=1 → 装 ota 组 → 装 gen1 组。
+/// 顺序严格对齐脚本：root → 停服 → 写 /oem/config/wlan0_bt_switch（默认 1，界面可勾选改 0）→ 装 ota 组 → 装 gen1 组。
 /// </summary>
 public sealed class DebUpgradeService
 {
@@ -86,10 +86,10 @@ public sealed class DebUpgradeService
             await StopServiceAsync(request.ServiceName, ct);
             Step(UpgradeSteps.StopService, StepStatus.Done);
 
-            Report(progress, 68, $"写入 {request.BtSwitchFile}");
+            Report(progress, 68, $"写入 {request.BtSwitchFile} = {request.BtSwitchValue}");
             Step(UpgradeSteps.BtSwitch, StepStatus.Running);
             await EnsureBluetoothSwitchAsync(request, ct);
-            Step(UpgradeSteps.BtSwitch, StepStatus.Done, "值 = 1");
+            Step(UpgradeSteps.BtSwitch, StepStatus.Done, $"值 = {request.BtSwitchValue}");
 
             var groups = DebPackageNaming.Ordered(selected.Select(p => p.Group)).ToList();
             var step = 72;
@@ -464,63 +464,65 @@ public sealed class DebUpgradeService
         }
     }
 
-    /// <summary>对应脚本 26-34 行：写 /oem/config/wlan0_bt_switch = 1 并回读确认。</summary>
+    /// <summary>对应脚本 26-34 行：把 /oem/config/wlan0_bt_switch 写成配置值（默认 1）并回读确认。</summary>
     private async Task EnsureBluetoothSwitchAsync(UpgradeRequest request, CancellationToken ct)
     {
-        Log("STEP", $"写入 {request.BtSwitchFile} = 1");
+        var expected = request.BtSwitchValue;
+        Log("STEP", $"写入 {request.BtSwitchFile} = {expected}");
 
-        var ok = await TryWriteSwitchAsync(request.BtSwitchFile, ct);
+        var ok = await TryWriteSwitchAsync(request.BtSwitchFile, expected, ct);
         if (!ok)
         {
             Log("WARN", "首次写入失败，尝试重新挂载 /oem 为可写");
             var remount = await TryShellAsync("mount -o remount,rw /oem 2>&1", false, TimeSpan.FromSeconds(30), ct);
             Log("OUT", remount.Combined);
-            ok = await TryWriteSwitchAsync(request.BtSwitchFile, ct);
+            ok = await TryWriteSwitchAsync(request.BtSwitchFile, expected, ct);
         }
 
         if (ok)
         {
-            Log("OK", $"{request.BtSwitchFile} 内容已确认为 1");
+            Log("OK", $"{request.BtSwitchFile} 内容已确认为 {expected}");
             return;
         }
 
-        // 默认严格：标志位必须写成 1，否则升级结果不可用。
+        // 默认严格：标志位必须写成配置值，否则升级结果不可用。
         if (request.StrictConfigStep)
         {
             throw new UpgradeException(
-                $"写入失败：{request.BtSwitchFile}",
+                $"写入失败：{request.BtSwitchFile} = {expected}",
                 "请确认 /oem 分区可写（mount | grep oem）以及 SELinux 策略。");
         }
 
-        Log("WARN", $"写入失败：{request.BtSwitchFile}（已继续执行）");
+        Log("WARN", $"写入失败：{request.BtSwitchFile} = {expected}（已继续执行）");
     }
 
     /// <summary>安装收尾再复查一次，防止 deb 覆盖配置文件导致标志位被改回。</summary>
     private async Task FinalizeBluetoothSwitchAsync(UpgradeRequest request, CancellationToken ct)
     {
+        var expected = request.BtSwitchValue.ToString();
         var current = await TryShellAsync($"cat '{request.BtSwitchFile}' 2>/dev/null | tr -d ' \\t\\r\\n'", false, TimeSpan.FromSeconds(20), ct);
         var value = current.StdOut.Trim();
         Log("INFO", $"复查 {request.BtSwitchFile} 当前值：{(string.IsNullOrEmpty(value) ? "<空>" : value)}");
 
-        if (value == "1")
+        if (value == expected)
         {
-            Log("OK", $"标志位最终确认为 1");
+            Log("OK", $"标志位最终确认为 {expected}");
             await TryShellAsync("sync", false, TimeSpan.FromSeconds(30), ct);
             return;
         }
 
-        Log("WARN", "安装后标志位不为 1，重新写入");
+        Log("WARN", $"安装后标志位不为 {expected}，重新写入");
         await EnsureBluetoothSwitchAsync(request, ct);
         await TryShellAsync("sync", false, TimeSpan.FromSeconds(30), ct);
 
         var again = await TryShellAsync($"cat '{request.BtSwitchFile}' 2>/dev/null | tr -d ' \\t\\r\\n'", false, TimeSpan.FromSeconds(20), ct);
-        Log(again.StdOut.Trim() == "1" ? "OK" : "ERROR", $"标志位最终值：{again.StdOut.Trim()}");
+        Log(again.StdOut.Trim() == expected ? "OK" : "ERROR", $"标志位最终值：{again.StdOut.Trim()}");
     }
 
-    private async Task<bool> TryWriteSwitchAsync(string filePath, CancellationToken ct)
+    private async Task<bool> TryWriteSwitchAsync(string filePath, int value, CancellationToken ct)
     {
         var directory = ParentDir(filePath);
-        var command = $"mkdir -p '{directory}'; printf '1\\n' > '{filePath}'; echo write_rc=$?; cat '{filePath}'";
+        var command = $"mkdir -p '{directory}'; printf '{value}\\n' > '{filePath}'; echo write_rc=$?; cat '{filePath}'";
         var result = await TryShellAsync(command, true, TimeSpan.FromSeconds(30), ct);
         if (!result.Success)
         {
@@ -530,7 +532,7 @@ public sealed class DebUpgradeService
         return result.StdOut
             .Split('\n')
             .Select(line => line.Trim('\r', ' ', '\t'))
-            .Any(line => line == "1");
+            .Any(line => line == value.ToString());
     }
 
     private static string ParentDir(string unixPath)
