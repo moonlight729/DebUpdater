@@ -3,6 +3,13 @@
 版本号取 `DebUpdater.App/DebUpdater.App.csproj` 的 `<Version>`，界面标题栏以 tag 形式展示（如 `V1.0.0`）。
 发布新版本时：`Version / AssemblyVersion / FileVersion / InformationalVersion` 同步递增，并在本文件追加一条记录。
 
+## V1.2.0
+
+- 配置文件复查结果纳入最终汇总：`UpgradeResult.ConfigCheck` 记录 `rclone.conf` 的存在性与内容一致性（含设备侧 MD5 前 8 位），升级结束后在日志中输出一行
+  「配置文件复查 rclone.conf → /root/.config/rclone/rclone.conf：内容一致（设备 MD5 xxxxxxxx）」。
+- 未勾选 `rclone.conf` 时汇总里不出现该条目，与「未勾选不检查」的规则保持一致。
+- 复查判定逻辑收敛为 `InspectRemoteConfigAsync`：优先 MD5 比对，设备无 `md5sum` 时退化为「文件存在 + 大小一致」，文件不存在则判定为「文件缺失」。
+
 ## V1.1.0
 
 - 新增配置文件推送：选择目录时一起扫描同目录下的 `rclone.conf`，**默认勾选**；取消勾选则本次不推送。
