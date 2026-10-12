@@ -72,7 +72,11 @@ public sealed record UpgradeRequest(
     bool StartServiceAfterInstall = true,
     bool RebootAfterInstall = false,
     bool KeepRemoteFiles = false,
-    bool StrictConfigStep = true);
+    bool StrictConfigStep = true,
+    /// <summary>本地待推送的配置文件（rclone.conf）；为 null 或空表示本次不推送。</summary>
+    string? ConfigFilePath = null,
+    /// <summary>配置文件落到设备上的完整路径，默认 /root/.config/rclone/rclone.conf。</summary>
+    string ConfigRemotePath = "/root/.config/rclone/rclone.conf");
 
 public enum StepStatus
 {
@@ -139,6 +143,7 @@ public static class UpgradeSteps
     public const string Root = "获取 root 权限";
     public const string Preflight = "设备能力预检";
     public const string Upload = "上传 deb 包";
+    public const string PushConfig = "推送 rclone 配置";
     public const string Metadata = "读取 deb 元数据";
     public const string StopService = "停止业务服务";
     public const string BtSwitch = "写入 BT 开关标志位";
@@ -149,6 +154,6 @@ public static class UpgradeSteps
 
     public static IReadOnlyList<string> All =>
     [
-        Connect, Root, Preflight, Upload, Metadata, StopService, BtSwitch, InstallOta, InstallGen1, Verify, Finish
+        Connect, Root, Preflight, Upload, PushConfig, Metadata, StopService, BtSwitch, InstallOta, InstallGen1, Verify, Finish
     ];
 }

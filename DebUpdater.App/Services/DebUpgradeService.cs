@@ -76,6 +76,15 @@ public sealed class DebUpgradeService
             await PushPackagesAsync(selected, remoteDir, progress, 25, 55, ct);
             Step(UpgradeSteps.Upload, StepStatus.Done);
 
+            // 配置文件（rclone.conf）：勾选才推送，未勾选整步跳过、继续后面的安装流程。
+            Report(progress, 56, "推送 rclone 配置文件");
+            Step(UpgradeSteps.PushConfig, StepStatus.Running);
+            var configPushed = await PushConfigFileAsync(request, remoteDir, ct);
+            Step(
+                UpgradeSteps.PushConfig,
+                configPushed ? StepStatus.Done : StepStatus.Skipped,
+                configPushed ? request.ConfigRemotePath : "未勾选，跳过");
+
             Report(progress, 58, "读取 deb 元数据（同时验证 dpkg 能否识别 zstd 包）");
             Step(UpgradeSteps.Metadata, StepStatus.Running);
             await ReadRemoteMetadataAsync(selected, remoteDir, ct);
@@ -109,16 +118,20 @@ public sealed class DebUpgradeService
             var verifications = await VerifyAsync(selected, ct);
             Step(UpgradeSteps.Verify, StepStatus.Done, $"{verifications.Count} 个包");
 
-            Report(progress, 98, "收尾：daemon-reload / 启动服务 / 复查标志位");
+            Report(progress, 98, "收尾：daemon-reload / 启动服务 / 复查标志位与 rclone 配置");
             Step(UpgradeSteps.Finish, StepStatus.Running);
             await PostInstallAsync(request, ct);
             await FinalizeBluetoothSwitchAsync(request, ct);
+            await FinalizeConfigFileAsync(request, configPushed, remoteDir, ct);
             if (!request.KeepRemoteFiles)
             {
                 await CleanupAsync(remoteDir, ct);
             }
 
-            Step(UpgradeSteps.Finish, StepStatus.Done);
+            Step(
+                UpgradeSteps.Finish,
+                StepStatus.Done,
+                configPushed ? $"配置已确认 {RemoteFileName(request.ConfigRemotePath)}" : null);
             Report(progress, 100, "升级完成");
             return new UpgradeResult(true, "升级完成", verifications, sw.Elapsed);
         }
@@ -381,6 +394,168 @@ public sealed class DebUpgradeService
 
         Log("OK", $"{package.FileName} MD5 校验一致");
     }
+
+    /// <summary>
+    /// 推送配置文件（rclone.conf）到 /root/.config/rclone/rclone.conf：
+    /// 先探测目标目录（不存在则创建），再上传并 MD5 校验。
+    /// 返回 false 表示未勾选/文件不存在，调用方应把该步骤标记为「跳过」并继续。
+    /// </summary>
+    private async Task<bool> PushConfigFileAsync(
+        UpgradeRequest request,
+        string remoteDir,
+        CancellationToken ct)
+    {
+        var localPath = request.ConfigFilePath;
+        var remotePath = request.ConfigRemotePath;
+
+        if (string.IsNullOrWhiteSpace(localPath))
+        {
+            Log("INFO", $"未勾选 {RemoteFileName(remotePath)}，跳过配置文件推送");
+            return false;
+        }
+
+        if (!File.Exists(localPath))
+        {
+            Log("WARN", $"配置文件不存在，跳过推送：{localPath}");
+            return false;
+        }
+
+        var fileName = Path.GetFileName(localPath);
+        var remoteConfigDir = ParentDir(remotePath);
+
+        // 1) 探测目标目录：没有就创建（/root/.config/rclone 默认不存在）。
+        var probe = await TryShellAsync(
+            $"test -d '{remoteConfigDir}' && echo EXISTS || echo MISSING",
+            false,
+            TimeSpan.FromSeconds(20),
+            ct);
+        var existed = LastLine(probe.StdOut) == "EXISTS";
+        Log("INFO", $"探测配置目录 {remoteConfigDir}：{(existed ? "已存在" : "不存在，将创建")}");
+
+        var create = await TryShellAsync(
+            $"mkdir -p '{remoteConfigDir}' && chmod 0755 '{remoteConfigDir}' && ls -ld '{remoteConfigDir}'",
+            true,
+            TimeSpan.FromSeconds(30),
+            ct);
+        if (!create.Success)
+        {
+            throw new UpgradeException($"配置目录不可用：{remoteConfigDir}", create.Combined);
+        }
+
+        Log("OK", $"配置目录就绪：{remoteConfigDir}（{(existed ? "已存在" : "本次创建")}）");
+
+        // 2) SFTP/SCP 以登录用户身份上传，/root 通常只对 root 可写，
+        //    因此先落到本次的 0777 工作目录，再用提权 shell 拷到目标路径。
+        var staged = $"{remoteDir}/{fileName}";
+        var localMd5 = await ComputeMd5Async(localPath, ct);
+
+        await _remote.UploadAsync(localPath, staged, null, TimeSpan.FromMinutes(5), ct);
+        Log("OK", $"已上传 {fileName}（{DebPackageNaming.FormatSize(new FileInfo(localPath).Length)}）→ 暂存 {staged}");
+
+        var install = await TryShellAsync(
+            $"cp '{staged}' '{remotePath}' && chmod 0644 '{remotePath}' && rm -f '{staged}'",
+            true,
+            TimeSpan.FromSeconds(30),
+            ct);
+        if (!install.Success)
+        {
+            throw new UpgradeException($"写入配置文件失败：{remotePath}", install.Combined);
+        }
+
+        Log("OK", $"配置文件已就位：{remotePath}");
+
+        // 3) 与本地 MD5 比对，确认内容完整。
+        var check = await TryShellAsync($"md5sum '{remotePath}' | awk '{{print $1}}'", false, TimeSpan.FromSeconds(30), ct);
+        var remoteMd5 = LastLine(check.StdOut);
+        if (string.IsNullOrWhiteSpace(remoteMd5))
+        {
+            Log("WARN", "设备上没有 md5sum，跳过配置文件完整性校验");
+            return true;
+        }
+
+        if (!string.Equals(remoteMd5, localMd5, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new UpgradeException(
+                $"配置文件校验失败：{fileName}",
+                $"本地 MD5 {localMd5} ≠ 设备 MD5 {remoteMd5}，传输可能损坏。");
+        }
+
+        Log("OK", $"{fileName} MD5 校验一致");
+        return true;
+    }
+
+    /// <summary>
+    /// 收尾复查配置文件：只有本次勾选并推送过 rclone.conf 才检查；
+    /// 未勾选 / 目录里没有该文件时直接跳过，不做任何校验。
+    /// </summary>
+    private async Task FinalizeConfigFileAsync(
+        UpgradeRequest request,
+        bool pushed,
+        string remoteDir,
+        CancellationToken ct)
+    {
+        if (!pushed)
+        {
+            Log("INFO", "本次未勾选 rclone.conf，跳过配置文件复查");
+            return;
+        }
+
+        var localPath = request.ConfigFilePath;
+        var remotePath = request.ConfigRemotePath;
+
+        if (string.IsNullOrWhiteSpace(localPath) || !File.Exists(localPath))
+        {
+            Log("WARN", "本地配置文件已不存在，跳过复查");
+            return;
+        }
+
+        if (await IsRemoteConfigIntactAsync(localPath, remotePath, ct))
+        {
+            Log("OK", $"复查通过：{remotePath} 与本地 {Path.GetFileName(localPath)} 一致");
+            return;
+        }
+
+        // 安装过程可能把配置覆盖或删掉：重新推一次，再确认一次。
+        Log("WARN", $"复查发现 {remotePath} 缺失或内容不一致，重新推送一次");
+        await PushConfigFileAsync(request, remoteDir, ct);
+
+        if (!await IsRemoteConfigIntactAsync(localPath, remotePath, ct))
+        {
+            throw new UpgradeException(
+                $"配置文件复查失败：{remotePath}",
+                "dpkg 安装过程可能覆盖或删除了该文件，请确认 deb 包内是否包含同名配置。");
+        }
+
+        Log("OK", $"重新推送后复查通过：{remotePath}");
+    }
+
+    /// <summary>远端配置文件是否还在、内容是否与本地一致（优先 MD5，无 md5sum 时退化为大小比对）。</summary>
+    private async Task<bool> IsRemoteConfigIntactAsync(string localPath, string remotePath, CancellationToken ct)
+    {
+        var localMd5 = await ComputeMd5Async(localPath, ct);
+        var check = await TryShellAsync(
+            $"md5sum '{remotePath}' 2>/dev/null | awk '{{print $1}}'",
+            false,
+            TimeSpan.FromSeconds(30),
+            ct);
+
+        var remoteMd5 = LastLine(check.StdOut);
+        if (!string.IsNullOrWhiteSpace(remoteMd5))
+        {
+            return string.Equals(remoteMd5, localMd5, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // 设备上没有 md5sum：退化为「文件存在且大小一致」。
+        var size = await TryShellAsync($"wc -c < '{remotePath}' 2>/dev/null", false, TimeSpan.FromSeconds(20), ct);
+        var remoteSize = LastLine(size.StdOut);
+        return long.TryParse(remoteSize, out var bytes) && bytes == new FileInfo(localPath).Length;
+    }
+
+    private static string RemoteFileName(string unixPath) =>
+        unixPath[(unixPath.LastIndexOf('/') + 1)..];
+
+    private static string LastLine(string text) =>
+        text.Split('\n', StringSplitOptions.RemoveEmptyEntries).LastOrDefault()?.Trim('\r', ' ', '\t') ?? string.Empty;
 
     private async Task ReadRemoteMetadataAsync(IReadOnlyList<LocalDebPackage> packages, string remoteDir, CancellationToken ct)
     {

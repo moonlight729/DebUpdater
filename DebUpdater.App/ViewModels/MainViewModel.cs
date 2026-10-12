@@ -22,6 +22,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private const string BtSwitchFile = "/oem/config/wlan0_bt_switch";
     private const string RemoteRoot = "/data/local/tmp/originflow_resume";
 
+    // 配置文件：随 deb 一起推送的 rclone 配置，装在设备上的固定路径。
+    private const string ConfigFileName = "rclone.conf";
+    private const string ConfigRemotePath = "/root/.config/rclone/rclone.conf";
+
     private readonly ToolSettings _settings;
     private readonly string _settingsPath;
     private readonly DeviceScanner _scanner = new();
@@ -76,6 +80,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     public ObservableCollection<LocalDebPackage> Packages { get; } = [];
+    /// <summary>同目录下探测到的配置文件（rclone.conf），默认勾选，取消勾选则不推送。</summary>
+    public ObservableCollection<ConfigFileItem> ConfigFiles { get; } = [];
     public ObservableCollection<UpgradeLogLine> Logs { get; } = [];
     public ObservableCollection<UpgradeStepItem> Steps { get; } = [];
     public ObservableCollection<DiscoveredDevice> Devices { get; } = [];
@@ -270,6 +276,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        // 配置文件与 deb 放在同一个目录：扫到就默认勾选，用户可以取消。
+        var configFile = FindConfigFile(directory);
+
         RunOnUi(() =>
         {
             Packages.Clear();
@@ -277,10 +286,36 @@ public sealed class MainViewModel : INotifyPropertyChanged
             {
                 Packages.Add(new LocalDebPackage(file));
             }
+
+            ConfigFiles.Clear();
+            if (configFile is not null)
+            {
+                ConfigFiles.Add(new ConfigFileItem(configFile, ConfigRemotePath));
+            }
+
+            OnPropertyChanged(nameof(ConfigFileSummary));
         });
 
         AppendLog("INFO", $"扫描到 {files.Count} 个 deb：{directory}");
+        AppendLog(configFile is null ? "WARN" : "INFO", ConfigFileSummary);
     }
+
+    /// <summary>待推送的配置文件本地路径；未勾选或目录里没有则为 null。</summary>
+    private string? SelectedConfigFilePath =>
+        ConfigFiles.FirstOrDefault(c => c.Selected)?.FilePath;
+
+    /// <summary>界面提示：当前是否发现配置文件、勾选后会推到哪个路径。</summary>
+    public string ConfigFileSummary => ConfigFiles.Count == 0
+        ? $"目录中没有 {ConfigFileName}，本次不会推送配置文件"
+        : $"勾选后推送 {ConfigFileName} → {ConfigRemotePath}";
+
+    private static string? FindConfigFile(string directory) =>
+        Directory
+            .GetFiles(directory, "*.*", SearchOption.TopDirectoryOnly)
+            .FirstOrDefault(path => string.Equals(
+                Path.GetFileName(path),
+                ConfigFileName,
+                StringComparison.OrdinalIgnoreCase));
 
     public void SaveSettings()
     {
@@ -516,6 +551,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
         StatusText = $"开始执行 · 目标 {Host}";
         AppendLog("STEP", "=== 开始升级流程（SSH 版，逻辑对齐 originflow_resume.sh）===");
         AppendLog("INFO", $"目标设备：{User}@{Host}:{Port}；服务：{ServiceName}；标志位：{BtSwitchSummary}");
+        var configPath = SelectedConfigFilePath;
+        AppendLog("INFO", configPath is null
+            ? $"配置文件：未勾选 {ConfigFileName}（或目录中不存在），跳过推送"
+            : $"配置文件：{configPath} → {ConfigRemotePath}");
 
         try
         {
@@ -536,7 +575,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 StartServiceAfterInstall: true,
                 RebootAfterInstall: false,
                 KeepRemoteFiles: false,
-                StrictConfigStep: true);
+                StrictConfigStep: true,
+                ConfigFilePath: configPath,
+                ConfigRemotePath: ConfigRemotePath);
 
             var progress = new Progress<UpgradeProgress>(value =>
             {
@@ -610,7 +651,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         using var dialog = new WinForms.FolderBrowserDialog
         {
-            Description = "选择存放 deb 包的目录",
+            Description = "选择存放 deb 包与 rclone.conf 的目录",
             UseDescriptionForTitle = true,
             ShowNewFolderButton = false
         };
