@@ -600,6 +600,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     verification.Installed && verification.VersionMatched ? "OK" : "ERROR",
                     $"校验 {verification.FileName} → {verification.Package}：{verification.StatusText}");
             }
+
+            if (result.ConfigCheck is { } config)
+            {
+                AppendLog(
+                    config.Exists && config.ContentMatched ? "OK" : "ERROR",
+                    $"配置文件复查 {config.FileName} → {config.RemotePath}：{config.StatusText}{config.Detail}");
+            }
         }
         catch (Exception ex)
         {

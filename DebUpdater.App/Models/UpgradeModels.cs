@@ -55,12 +55,26 @@ public sealed record PackageVerification(string FileName, string Package, string
     private bool VersionMatchedCore() => string.Equals(ExpectedVersion, InstalledVersion, StringComparison.Ordinal);
 }
 
+/// <summary>配置文件（rclone.conf）的最终复查结果；未勾选推送时为 null。</summary>
+public sealed record ConfigFileCheck(
+    string FileName,
+    string RemotePath,
+    bool Exists,
+    bool ContentMatched,
+    string? RemoteMd5 = null)
+{
+    public string StatusText => !Exists ? "文件缺失" : ContentMatched ? "内容一致" : "内容不一致";
+
+    public string Detail => RemoteMd5 is null ? string.Empty : $"（设备 MD5 {RemoteMd5[..Math.Min(8, RemoteMd5.Length)]}）";
+}
+
 public sealed record UpgradeResult(
     bool Success,
     string Message,
     IReadOnlyList<PackageVerification> Verifications,
     TimeSpan Duration,
-    string? Detail = null);
+    string? Detail = null,
+    ConfigFileCheck? ConfigCheck = null);
 
 public sealed record UpgradeRequest(
     IReadOnlyList<LocalDebPackage> Packages,

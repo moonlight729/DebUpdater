@@ -122,7 +122,7 @@ public sealed class DebUpgradeService
             Step(UpgradeSteps.Finish, StepStatus.Running);
             await PostInstallAsync(request, ct);
             await FinalizeBluetoothSwitchAsync(request, ct);
-            await FinalizeConfigFileAsync(request, configPushed, remoteDir, ct);
+            var configCheck = await FinalizeConfigFileAsync(request, configPushed, remoteDir, ct);
             if (!request.KeepRemoteFiles)
             {
                 await CleanupAsync(remoteDir, ct);
@@ -133,7 +133,7 @@ public sealed class DebUpgradeService
                 StepStatus.Done,
                 configPushed ? $"配置已确认 {RemoteFileName(request.ConfigRemotePath)}" : null);
             Report(progress, 100, "升级完成");
-            return new UpgradeResult(true, "升级完成", verifications, sw.Elapsed);
+            return new UpgradeResult(true, "升级完成", verifications, sw.Elapsed, ConfigCheck: configCheck);
         }
         catch (OperationCanceledException)
         {
@@ -487,8 +487,9 @@ public sealed class DebUpgradeService
     /// <summary>
     /// 收尾复查配置文件：只有本次勾选并推送过 rclone.conf 才检查；
     /// 未勾选 / 目录里没有该文件时直接跳过，不做任何校验。
+    /// 返回复查结果，会一并返回给调用方展示在最终汇总里。
     /// </summary>
-    private async Task FinalizeConfigFileAsync(
+    private async Task<ConfigFileCheck?> FinalizeConfigFileAsync(
         UpgradeRequest request,
         bool pushed,
         string remoteDir,
@@ -497,7 +498,7 @@ public sealed class DebUpgradeService
         if (!pushed)
         {
             Log("INFO", "本次未勾选 rclone.conf，跳过配置文件复查");
-            return;
+            return null;
         }
 
         var localPath = request.ConfigFilePath;
@@ -506,20 +507,23 @@ public sealed class DebUpgradeService
         if (string.IsNullOrWhiteSpace(localPath) || !File.Exists(localPath))
         {
             Log("WARN", "本地配置文件已不存在，跳过复查");
-            return;
+            return null;
         }
 
-        if (await IsRemoteConfigIntactAsync(localPath, remotePath, ct))
+        var fileName = Path.GetFileName(localPath);
+        var check = await InspectRemoteConfigAsync(localPath, remotePath, ct);
+        if (check.Exists && check.Matched)
         {
-            Log("OK", $"复查通过：{remotePath} 与本地 {Path.GetFileName(localPath)} 一致");
-            return;
+            Log("OK", $"复查通过：{remotePath} 与本地 {fileName} 一致");
+            return new ConfigFileCheck(fileName, remotePath, true, true, check.RemoteMd5);
         }
 
         // 安装过程可能把配置覆盖或删掉：重新推一次，再确认一次。
         Log("WARN", $"复查发现 {remotePath} 缺失或内容不一致，重新推送一次");
         await PushConfigFileAsync(request, remoteDir, ct);
 
-        if (!await IsRemoteConfigIntactAsync(localPath, remotePath, ct))
+        check = await InspectRemoteConfigAsync(localPath, remotePath, ct);
+        if (!check.Exists || !check.Matched)
         {
             throw new UpgradeException(
                 $"配置文件复查失败：{remotePath}",
@@ -527,10 +531,14 @@ public sealed class DebUpgradeService
         }
 
         Log("OK", $"重新推送后复查通过：{remotePath}");
+        return new ConfigFileCheck(fileName, remotePath, true, true, check.RemoteMd5);
     }
 
     /// <summary>远端配置文件是否还在、内容是否与本地一致（优先 MD5，无 md5sum 时退化为大小比对）。</summary>
-    private async Task<bool> IsRemoteConfigIntactAsync(string localPath, string remotePath, CancellationToken ct)
+    private async Task<(bool Exists, bool Matched, string? RemoteMd5)> InspectRemoteConfigAsync(
+        string localPath,
+        string remotePath,
+        CancellationToken ct)
     {
         var localMd5 = await ComputeMd5Async(localPath, ct);
         var check = await TryShellAsync(
@@ -542,13 +550,15 @@ public sealed class DebUpgradeService
         var remoteMd5 = LastLine(check.StdOut);
         if (!string.IsNullOrWhiteSpace(remoteMd5))
         {
-            return string.Equals(remoteMd5, localMd5, StringComparison.OrdinalIgnoreCase);
+            return (true, string.Equals(remoteMd5, localMd5, StringComparison.OrdinalIgnoreCase), remoteMd5);
         }
 
         // 设备上没有 md5sum：退化为「文件存在且大小一致」。
         var size = await TryShellAsync($"wc -c < '{remotePath}' 2>/dev/null", false, TimeSpan.FromSeconds(20), ct);
         var remoteSize = LastLine(size.StdOut);
-        return long.TryParse(remoteSize, out var bytes) && bytes == new FileInfo(localPath).Length;
+        return long.TryParse(remoteSize, out var bytes)
+            ? (true, bytes == new FileInfo(localPath).Length, null)
+            : (false, false, null);
     }
 
     private static string RemoteFileName(string unixPath) =>
